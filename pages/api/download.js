@@ -1,5 +1,7 @@
 import { spawn } from "child_process";
 import path from "path";
+import fs from "fs";
+import https from "https";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
@@ -12,8 +14,25 @@ export default async function handler(req, res) {
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
   res.setHeader("Content-Type", type === "mp3" ? "audio/mpeg" : "video/mp4");
 
-  // Path to Linux yt-dlp binary (include it in your repo root)
-  const ytDlpPath = path.join(process.cwd(), "yt-dlp"); // <-- Linux binary, no .exe
+  // Path to yt-dlp binary
+  const ytDlpPath = path.join(process.cwd(), "yt-dlp");
+
+  // Download yt-dlp if it doesn't exist
+  if (!fs.existsSync(ytDlpPath)) {
+    await new Promise((resolve, reject) => {
+      const file = fs.createWriteStream(ytDlpPath);
+      https.get(
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux",
+        (response) => {
+          response.pipe(file);
+          file.on("finish", () => {
+            fs.chmodSync(ytDlpPath, 0o755); // Make it executable
+            resolve();
+          });
+        }
+      ).on("error", (err) => reject(err));
+    });
+  }
 
   // Spawn yt-dlp to stdout
   let ytCommand;
@@ -25,20 +44,20 @@ export default async function handler(req, res) {
       "--audio-quality",
       "9",
       "-o",
-      "-",
+      "-", // stream to stdout
       url
     ]);
   } else {
     ytCommand = spawn(ytDlpPath, [
       "-f",
-      "18",
+      "18", // 360p mp4
       "-o",
-      "-",
+      "-", // stream to stdout
       url
     ]);
   }
 
-  // Pipe yt-dlp stdout directly to browser
+  // Pipe stdout to browser
   ytCommand.stdout.pipe(res);
   ytCommand.stderr.on("data", (data) => console.error(data.toString()));
 
