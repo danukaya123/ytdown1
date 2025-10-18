@@ -1,24 +1,24 @@
 import { spawn } from "child_process";
+import path from "path";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
   const { url, type } = req.body;
-
   if (!url || !type) return res.status(400).json({ error: "URL and type required" });
 
   // Set filename for browser download
   const filename = type === "mp3" ? "audio.mp3" : "video_360p.mp4";
-
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
   res.setHeader("Content-Type", type === "mp3" ? "audio/mpeg" : "video/mp4");
 
+  // Path to Linux yt-dlp binary (include it in your repo root)
+  const ytDlpPath = path.join(process.cwd(), "yt-dlp"); // <-- Linux binary, no .exe
+
   // Spawn yt-dlp to stdout
   let ytCommand;
-
   if (type === "mp3") {
-    // Audio only
-    ytCommand = spawn("yt-dlp.exe", [
+    ytCommand = spawn(ytDlpPath, [
       "-x",
       "--audio-format",
       "mp3",
@@ -29,8 +29,7 @@ export default async function handler(req, res) {
       url
     ]);
   } else {
-    // 360p video
-    ytCommand = spawn("yt-dlp.exe", [
+    ytCommand = spawn(ytDlpPath, [
       "-f",
       "18",
       "-o",
