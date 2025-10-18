@@ -14,19 +14,19 @@ export default async function handler(req, res) {
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
   res.setHeader("Content-Type", type === "mp3" ? "audio/mpeg" : "video/mp4");
 
-  // Path to yt-dlp binary
-  const ytDlpPath = path.join(process.cwd(), "yt-dlp");
+  // Use Vercel writable temp folder
+  const tmpPath = "/tmp/yt-dlp";
 
-  // Download yt-dlp if it doesn't exist
-  if (!fs.existsSync(ytDlpPath)) {
+  // Download yt-dlp if not exists
+  if (!fs.existsSync(tmpPath)) {
     await new Promise((resolve, reject) => {
-      const file = fs.createWriteStream(ytDlpPath);
+      const file = fs.createWriteStream(tmpPath);
       https.get(
         "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux",
         (response) => {
           response.pipe(file);
           file.on("finish", () => {
-            fs.chmodSync(ytDlpPath, 0o755); // Make it executable
+            fs.chmodSync(tmpPath, 0o755); // Make executable
             resolve();
           });
         }
@@ -34,10 +34,10 @@ export default async function handler(req, res) {
     });
   }
 
-  // Spawn yt-dlp to stdout
+  // Spawn yt-dlp from temp folder
   let ytCommand;
   if (type === "mp3") {
-    ytCommand = spawn(ytDlpPath, [
+    ytCommand = spawn(tmpPath, [
       "-x",
       "--audio-format",
       "mp3",
@@ -48,11 +48,11 @@ export default async function handler(req, res) {
       url
     ]);
   } else {
-    ytCommand = spawn(ytDlpPath, [
+    ytCommand = spawn(tmpPath, [
       "-f",
-      "18", // 360p mp4
+      "18",
       "-o",
-      "-", // stream to stdout
+      "-", // 360p mp4 stream to stdout
       url
     ]);
   }
