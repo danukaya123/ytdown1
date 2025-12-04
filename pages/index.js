@@ -11,32 +11,56 @@ export default function YouTubeDownloader() {
     setIsVisible(true);
   }, []);
 
-  const handleDownload = () => {
-    if (!url) return;
-    
-    setIsLoading(true);
-    
-    const form = document.createElement("form");
-    form.method = "POST";
-    form.action = "/api/download";
+const handleDownload = async () => {
+  if (!url) return;
 
-    const urlInput = document.createElement("input");
-    urlInput.name = "url";
-    urlInput.value = url;
+  setIsLoading(true);
 
-    const typeInput = document.createElement("input");
-    typeInput.name = "type";
-    typeInput.value = type;
+  try {
+    const response = await fetch("/api/download", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ url, type }),
+    });
 
-    form.appendChild(urlInput);
-    form.appendChild(typeInput);
+    if (!response.ok) {
+      const errorData = await response.json();
+      alert("Error: " + (errorData.error || "Failed to download"));
+      setIsLoading(false);
+      return;
+    }
 
-    document.body.appendChild(form);
-    form.submit();
-    document.body.removeChild(form);
-    
-    setTimeout(() => setIsLoading(false), 3000);
-  };
+    // Get filename from content-disposition header
+    const disposition = response.headers.get("Content-Disposition");
+    let filename = "download";
+    if (disposition && disposition.includes("filename=")) {
+      filename = disposition
+        .split("filename=")[1]
+        .replace(/['"]/g, "");
+    }
+
+    const blob = await response.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+
+    // Create temporary link to trigger download
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    window.URL.revokeObjectURL(downloadUrl);
+  } catch (err) {
+    console.error(err);
+    alert("Download failed. Try again later.");
+  } finally {
+    setIsLoading(false);
+  }
+};
+
 
   return (
     <>
