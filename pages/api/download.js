@@ -1,105 +1,151 @@
-// pages/api/download.js  (Next.js API route example)
+// /api/download.js or pages/api/download.js
+
 import { spawn } from "child_process";
 import fs from "fs";
 import https from "https";
-import { pipeline } from "stream";
-import { promisify } from "util";
+import path from "path";
 
-const pump = promisify(pipeline);
-
-async function downloadWithRedirects(url, outPath, maxRedirects = 5) {
+// ========== FOLLOW REDIRECTS + DOWNLOAD CLEANLY ==========
+function downloadWithRedirects(url, outPath, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
-    const _get = (u, redirectsLeft) => {
-      https.get(u, (res) => {
-        // follow redirects
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          if (redirectsLeft === 0) return reject(new Error("Too many redirects"));
-          return _get(res.headers.location, redirectsLeft - 1);
+    const doRequest = (currentUrl, redirectCount) => {
+      https.get(currentUrl, (res) => {
+        // If redirect
+        if (
+          res.statusCode >= 300 &&
+          res.statusCode < 400 &&
+          res.headers.location
+        ) {
+          if (redirectCount >= maxRedirects)
+            return reject(new Error("Too many redirects"));
+
+          return doRequest(res.headers.location, redirectCount + 1);
         }
+
+        // Must be OK
         if (res.statusCode !== 200) {
-          return reject(new Error(`Download failed, status ${res.statusCode}`));
+          return reject(
+            new Error("Download failed with status " + res.statusCode)
+          );
         }
+
+        // Write file
         const fileStream = fs.createWriteStream(outPath, { mode: 0o755 });
-        let total = 0;
-        res.on('data', (chunk) => total += chunk.length);
         res.pipe(fileStream);
-        fileStream.on('finish', () => {
-          fileStream.close(() => resolve(total));
+
+        let total = 0;
+        res.on("data", (chunk) => (total += chunk.length));
+
+        fileStream.on("finish", () => {
+          fileStream.close(() => {
+            // Very important: Check if binary looks valid
+            if (total < 100000) {
+              // <100KB means it's HTML page, not binary
+              return reject(new Error("Downloaded yt-dlp is too small"));
+            }
+            resolve(total);
+          });
         });
-        fileStream.on('error', (err) => reject(err));
-      }).on('error', (err) => reject(err));
+
+        fileStream.on("error", reject);
+      }).on("error", reject);
     };
-    _get(url, maxRedirects);
+
+    doRequest(url, 0);
   });
 }
 
+// ========== API HANDLER ==========
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
-  const { url, type } = req.body;
-  if (!url || !type) return res.status(400).json({ error: "URL and type required" });
-
-  const tmpFile = type === "mp3" ? "/tmp/audio.mp3" : "/tmp/video_360p.mp4";
-  const filename = type === "mp3" ? "audio.mp3" : "video_360p.mp4";
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-  res.setHeader("Content-Type", type === "mp3" ? "audio/mpeg" : "video/mp4");
-
-  // Prefer a stable yt-dlp binary URL that doesn't change name.
-  // Recommended: direct asset name 'yt-dlp' (no _linux) — GitHub releases redirects to the correct asset.
-  const ytDlpPath = "/tmp/yt-dlp";
-  const ytDlpDownloadUrl = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
-
   try {
-    // If missing, download the binary (follows redirects and validates)
+    // Method check
+    if (req.method !== "POST")
+      return res.status(405).json({ error: "Method Not Allowed" });
+
+    // Validate
+    const { url, type } = req.body;
+    if (!url || !type)
+      return res.status(400).json({ error: "URL and type required" });
+
+    // Temp file output
+    const outputPath =
+      type === "mp3" ? "/tmp/audio.mp3" : "/tmp/video_360p.mp4";
+
+    const fileName = type === "mp3" ? "audio.mp3" : "video_360p.mp4";
+
+    // Set download headers
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.setHeader(
+      "Content-Type",
+      type === "mp3" ? "audio/mpeg" : "video/mp4"
+    );
+
+    // yt-dlp binary location
+    const ytDlpPath = "/tmp/yt-dlp";
+
+    // Correct stable binary URL
+    const ytDlpURL =
+      "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+
+    // Download yt-dlp if missing
     if (!fs.existsSync(ytDlpPath)) {
-      const size = await downloadWithRedirects(ytDlpDownloadUrl, ytDlpPath);
-      if (!size || size < 50_000) { // sanity check: real binary > ~50KB (adjust threshold)
-        throw new Error("Downloaded yt-dlp looks too small");
-      }
+      console.log("Downloading yt-dlp...");
+
+      await downloadWithRedirects(ytDlpURL, ytDlpPath);
+
+      console.log("yt-dlp downloaded OK");
       fs.chmodSync(ytDlpPath, 0o755);
-      console.log("yt-dlp downloaded:", ytDlpPath, "size:", size);
     }
 
-    // Remove old tmp output if exists
-    if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+    // Remove old tmp file if exists
+    if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
 
-    const args = type === "mp3"
-      ? ["-x", "--audio-format", "mp3", "--audio-quality", "9", "-o", tmpFile, url]
-      : ["-f", "18", "-o", tmpFile, url];
+    // yt-dlp args
+    const args =
+      type === "mp3"
+        ? ["-x", "--audio-format", "mp3", "-o", outputPath, url]
+        : ["-f", "18", "-o", outputPath, url];
 
-    console.log("Spawning yt-dlp:", ytDlpPath, args.join(" "));
-    const ytCommand = spawn(ytDlpPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    console.log("Running yt-dlp with args:", args.join(" "));
 
-    ytCommand.stderr.on("data", (data) => {
-      // Log stderr to see what's failing (useful in Vercel logs)
-      console.error("yt-dlp stderr:", data.toString());
-    });
-    ytCommand.stdout.on("data", (d) => console.log("yt-dlp stdout:", d.toString()));
+    const proc = spawn(ytDlpPath, args);
 
-    ytCommand.on("close", (code) => {
-      console.log("yt-dlp exit code:", code);
+    // Log errors
+    proc.stderr.on("data", (d) =>
+      console.error("yt-dlp stderr:", d.toString())
+    );
+    proc.stdout.on("data", (d) =>
+      console.log("yt-dlp stdout:", d.toString())
+    );
+
+    proc.on("close", (code) => {
+      console.log("yt-dlp exited with:", code);
+
       if (code !== 0) {
-        return res.status(500).send("Download failed");
+        return res.status(500).json({ error: "yt-dlp failed" });
       }
-      // ensure file exists
-      if (!fs.existsSync(tmpFile)) {
-        console.error("File not found after yt-dlp finished");
-        return res.status(500).send("File not found");
+
+      // Ensure output exists
+      if (!fs.existsSync(outputPath)) {
+        return res.status(500).json({ error: "Output not found" });
       }
-      // stream out and cleanup
-      const stream = fs.createReadStream(tmpFile);
+
+      // Stream to client
+      const stream = fs.createReadStream(outputPath);
       stream.pipe(res);
+
       stream.on("close", () => {
-        try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch(e){/*ignore*/ }
+        // Remove temp file
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
       });
     });
 
-    ytCommand.on("error", (err) => {
-      console.error("yt-dlp spawn error:", err);
-      return res.status(500).send("yt-dlp spawn failed");
+    proc.on("error", (err) => {
+      console.error("Spawn error:", err);
+      return res.status(500).json({ error: "Spawn failed" });
     });
-
   } catch (err) {
-    console.error("Handler error:", err);
-    return res.status(500).json({ error: err.message || "Internal error" });
+    console.error("API Error:", err);
+    return res.status(500).json({ error: err.message });
   }
 }
